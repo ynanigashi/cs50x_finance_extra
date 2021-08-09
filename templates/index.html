@@ -1,0 +1,41 @@
+{% extends "layout.html" %}
+
+{% block title %}
+    INDEX
+{% endblock %}
+
+{% block main %}
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Symbol</th>
+                <th>Name</th>
+                <th>Shares</th>
+                <th>Price</th>
+                <th>TOTAL</th>
+            </tr>
+        </thead>
+        <tfoot>
+            <tr>
+                <td colspan="4"></td>
+                <td>{{ total | usd }}</td>
+            </tr>
+        </tfoot>
+        <tbody>
+            {% for row in rows %}
+                <tr>
+                    {% if row.symbol == "CASH" %}
+                        <td colspan="4">CASH</td>
+                        <td>{{ row.total | usd }}</td>
+                    {% else %}
+                        <td>{{ row.symbol }}</td>
+                        <td>{{ row.name }}</td>
+                        <td>{{ row.shares }}</td>
+                        <td>{{ row.price | usd }}</td>
+                        <td>{{ row.total | usd }}</td>
+                    {% endif %}
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}
