@@ -1,13 +1,22 @@
 import os
 
-from cs50 import SQL
 from flask import Flask, flash, redirect, render_template, request, session
 from flask_session import Session
 from tempfile import mkdtemp
 from werkzeug.exceptions import default_exceptions, HTTPException, InternalServerError
 from werkzeug.security import check_password_hash, generate_password_hash
+from sqlalchemy import create_engine
+from sqlalchemy import func
+from sqlalchemy.orm import Session as orm_session
+
 
 from helpers import apology, login_required, lookup, usd
+from models import Users, Transactions, Base
+
+# create engine
+DATABASE_URL = os.environ.get('DATABASE_URL') or 'sqlite+pysqlite:///finance.db'
+DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://')
+engine = create_engine(DATABASE_URL, future=True, echo=True)
 
 # Configure application
 app = Flask(__name__)
@@ -15,24 +24,7 @@ app = Flask(__name__)
 # Ensure templates are auto-reloaded
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-'''
-.schema transactions
-CREATE TABLE transactions (
-    id INTEGER,
-    user_id INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    price NUMERIC NOT NULL,
-    shares INTEGER NOT NULL,
-    created_datetime TIMESTAMP DEFAULT (datetime(CURRENT_TIMESTAMP,'localtime')),
-    PRIMARY KEY(id),
-    FOREIGN KEY (user_id) REFERENCES users(id)
-);
-'''
-
 # Ensure responses aren't cached
-
-
 @app.after_request
 def after_request(response):
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -50,31 +42,32 @@ app.config["SESSION_PERMANENT"] = False
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-# Configure CS50 Library to use SQLite database
-db = SQL("sqlite:///finance.db")
 
 # Make sure API key is set
 if not os.environ.get("IEXAPIS_API_KEY"):
-    raise RuntimeError("API_KEY not set")
+    raise RuntimeError("IEXAPIS_API_KEY not set")
 
 
 def sum_stocks(user_id):
     # define def sum_stocks
-    transactions = db.execute("SELECT symbol, type, SUM( shares ) AS sum FROM transactions \
-                                WHERE user_id = ? \
-                                GROUP BY symbol, type", user_id)
-
+    with orm_session(engine) as ss:
+        transactions = ss.query(Transactions.symbol, Transactions.type, func.sum(Transactions.shares)).\
+                        filter(Transactions.user_id == user_id).\
+                        group_by(Transactions.symbol, Transactions.type)
     # calculate stock Quantity
     stocks = {}
-    for t in transactions:
-        symbol = t['symbol']
-        if t['type'] == 'BUY':
-            stocks[symbol] = stocks.get(symbol, 0) + t['sum']
+    for symbol, type, sum in transactions:
+        if type == 'BUY':
+            stocks[symbol] = stocks.get(symbol, 0) + sum
         else:
-            stocks[symbol] = stocks.get(symbol, 0) - t['sum']
+            stocks[symbol] = stocks.get(symbol, 0) - sum
 
     return stocks
 
+def get_user_cash(user_id):
+    with orm_session(engine) as ss:
+        user = ss.query(Users).filter(Users.id==user_id).first()
+    return user.cash
 
 @app.route("/")
 @login_required
@@ -100,7 +93,8 @@ def index():
         rows.append(row)
 
     # get user cash
-    cash = db.execute("SELECT * FROM users WHERE id = ?", user_id)[0]["cash"]
+    cash = get_user_cash(user_id)
+    
     print(f'{cash}, type: {type(cash)}')
     total = cash
     for row in rows:
@@ -144,7 +138,8 @@ def buy():
         total_price = price * shares
 
         user_id = session.get("user_id")
-        cash = db.execute("SELECT * FROM users WHERE id = ?", user_id)[0]["cash"]
+        # get user cash
+        cash = get_user_cash(user_id)
         print(f"price is {total_price}, cash is {cash}")
 
         if total_price > cash:
@@ -152,13 +147,21 @@ def buy():
 
         """Buy shares of stock"""
         # save transaction
-        db.execute("INSERT INTO transactions (user_id, type, symbol, price, shares) VALUES(?, ?, ?, ?, ?)",
-                   user_id, "BUY", symbol, price, shares)
+        with orm_session(engine) as ss:
+            transaction = Transactions()
+            transaction.user_id = user_id
+            transaction.type = 'BUY'
+            transaction.symbol = symbol
+            transaction.price = price
+            transaction.shares = shares
+            ss.add(transaction)
 
-        # update cash
-        cash -= total_price
-        db.execute("UPDATE users SET cash = ? WHERE id = ?", cash, user_id)
-
+            # update cash
+            cash -= total_price
+            user = ss.query(Users).filter(Users.id==user_id).first()
+            user.cash = cash
+            ss.commit()
+        
         # Redirect user to home page
         return redirect("/")
 
@@ -170,7 +173,18 @@ def buy():
 @login_required
 def history():
     """Show history of transactions"""
-    transactions = db.execute("SELECT * FROM transactions WHERE user_id = ? ", session.get("user_id"))
+    transactions = []
+    with orm_session(engine) as ss:
+        rows = ss.query(Transactions).filter(Transactions.user_id == session.get("user_id"))
+        for row in rows:
+            transaction = {'type': row.type,
+                            'symbol': row.symbol,
+                            'price': row.price,
+                            'shares': row.shares,
+                            'created_datetime': row.created_datetime,
+                            }
+            transactions.append(transaction)
+    
     if len(transactions) > 0:
         return render_template("history.html", rows=transactions)
     else:
@@ -195,15 +209,16 @@ def login():
         elif not request.form.get("password"):
             return apology("must provide password", 403)
 
-        # Query database for username
-        rows = db.execute("SELECT * FROM users WHERE username = ?", request.form.get("username"))
+        with orm_session(engine) as ss:
+            # Query database for username
+            user = ss.query(Users).filter(Users.username == request.form.get('username')).first()
+            
+            # Ensure username exists and password is correct
+            if user == None or not check_password_hash(user.hash, request.form.get("password")):
+                return apology("invalid username and/or password", 403)
 
-        # Ensure username exists and password is correct
-        if len(rows) != 1 or not check_password_hash(rows[0]["hash"], request.form.get("password")):
-            return apology("invalid username and/or password", 403)
-
-        # Remember which user has logged in
-        session["user_id"] = rows[0]["id"]
+            # Remember which user has logged in
+            session["user_id"] = user.id
 
         # Redirect user to home page
         return redirect("/")
@@ -245,8 +260,6 @@ def quote():
     else:
         return render_template("quote.html")
 
-    return apology("TODO")
-
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -268,19 +281,23 @@ def register():
         elif password != confirmation:
             return apology("Confirmation password do not match.", 400)
 
-        """Register user"""
-        # check username is already in used
-        users = db.execute("SELECT * FROM users")
-        for user in users:
-            if username == user['username']:
-                return apology("The user name is already in used.", 400)
+        with orm_session(engine) as ss:
+            """Register user"""
+            # check username is already in used
+            users = ss.query(Users)
+            for user in users:
+                if user.username == username:
+                    return apology("The user name is already in used.", 400)
 
-        hash = generate_password_hash(password)
-        id = db.execute("INSERT INTO users (username, hash) VALUES(?, ?)", username, hash)
-        print(f'id: {id}')
+            user = Users();
+            user.username = username
+            user.hash = generate_password_hash(password)
+            ss.add(user)
+            ss.commit()
+            print(f'id: {user.id}')
 
-        # Remember which user has logged in
-        session["user_id"] = id
+            # Remember which user has logged in
+            session["user_id"] = user.id
 
         # Redirect user to home page
         return redirect("/")
@@ -303,24 +320,27 @@ def changepw():
         if not current_pw:
             return apology("must provide password", 400)
 
-        # get current pw hash
-        hash = db.execute("SELECT * FROM users WHERE id = ?", user_id)[0]["hash"]
+        with orm_session(engine) as ss:
+            # get current pw hash
+            hash = ss.query(Users).filter(Users.id==user_id).first().hash
 
-        # Ensure password is correct
-        if not check_password_hash(hash, current_pw):
-            return apology("invalid password", 400)
+            # Ensure password is correct
+            if not check_password_hash(hash, current_pw):
+                return apology("invalid password", 400)
 
-        # check new passwords
-        if not password:
-            return apology("new password is required.", 400)
-        if not confirmation:
-            return apology("Confirmation password is required.", 400)
-        elif password != confirmation:
-            return apology("Confirmation password do not match.", 400)
+            # check new passwords
+            if not password:
+                return apology("new password is required.", 400)
+            if not confirmation:
+                return apology("Confirmation password is required.", 400)
+            elif password != confirmation:
+                return apology("Confirmation password do not match.", 400)
 
-        """Update password"""
-        hash = generate_password_hash(password)
-        id = db.execute("UPDATE users SET hash = ? WHERE id = ?", hash, user_id)
+            """Update password"""
+            hash = generate_password_hash(password)
+            user = ss.query(Users).filter(Users.id==user_id).first()
+            user.hash = hash
+            ss.commit()
 
         # Redirect user to home page
         return redirect("/")
@@ -363,14 +383,20 @@ def sell():
         # get current price
         price = float(lookup(symbol)['price'])
 
-        # save transaction
-        db.execute("INSERT INTO transactions (user_id, type, symbol, price, shares) VALUES(?, ?, ?, ?, ?)",
-                   user_id, "SELL", symbol, price, shares)
+        with orm_session(engine) as ss:
+            # save transaction
+            transaction = Transactions()
+            transaction.user_id = user_id
+            transaction.type = 'SELL'
+            transaction.symbol = symbol
+            transaction.price = price
+            transaction.shares = shares
+            ss.add(transaction)
 
-        # update cash
-        cash = db.execute("SELECT * FROM users WHERE id = ?", user_id)[0]["cash"]
-        cash += price * shares
-        db.execute("UPDATE users SET cash = ? WHERE id = ?", cash, user_id)
+            # update cash
+            user = ss.query(Users).filter(Users.id==user_id).first()
+            user.cash += price * shares
+            ss.commit()
 
         # Redirect user to home page
         return redirect("/")
@@ -402,10 +428,11 @@ def deposit():
         if deposit < 1:
             return apology("deposit must be greater than 1.", 400)
 
-        # update cash
-        cash = db.execute("SELECT * FROM users WHERE id = ?", user_id)[0]["cash"]
-        cash += deposit
-        db.execute("UPDATE users SET cash = ? WHERE id = ?", cash, user_id)
+        with orm_session(engine) as ss:
+            # update cash
+            user = ss.query(Users).filter(Users.id==user_id).first()
+            user.cash += deposit
+            ss.commit()
 
         # Redirect user to home page
         return redirect("/")

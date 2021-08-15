@@ -1,4 +1,6 @@
-cs50
-Flask
-Flask-Session
-requests
+SQLAlchemy==1.4.22
+Flask==2.0.1
+Flask-Session==0.4.0
+Jinja2==3.0.1
+MarkupSafe==2.0.1
+requests==2.26.0
