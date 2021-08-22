@@ -9,6 +9,10 @@
     1. Session.executeで書き込み
     1. working with metadata
 1. Herokuで稼働させる
+    1. API_KEYを環境変数に設定する
+    ```
+    heroku config:set IEXAPIS_API_KEY=<API_KEY> -a <application_name>
+    ```
 1. HerokuのDBをPostgresSQLに切り替える
     1. postgressqlをherokuにデプロイ(アプリに紐づけてデプロイすると接続URLが自動でアプリの環境変数DATABASE＿URLに入る)
     ```
