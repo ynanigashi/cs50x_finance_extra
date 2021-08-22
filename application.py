@@ -454,5 +454,14 @@ def errorhandler(e):
 for code in default_exceptions:
     app.errorhandler(code)(errorhandler)
 
+def init_db():
+    try:
+        Base.metadata.drop_all(engine)
+    except Exception as e:
+        print('drop error! but continue')
+
+    Base.metadata.create_all(engine)
+    print('create_all is done')
+
 if __name__ == '__main__':
     app.run()
