@@ -3,6 +3,7 @@ import os
 from flask import Flask, flash, redirect, render_template, request, session
 from flask_session import Session
 from tempfile import mkdtemp
+from sqlalchemy.sql.expression import select
 from werkzeug.exceptions import default_exceptions, HTTPException, InternalServerError
 from werkzeug.security import check_password_hash, generate_password_hash
 from sqlalchemy import create_engine
@@ -49,18 +50,20 @@ if not os.environ.get("IEXAPIS_API_KEY"):
 
 
 def sum_stocks(user_id):
+    #make stmt
+    stmt = select(Transactions.symbol, Transactions.type, func.sum(Transactions.shares)).\
+            where(Transactions.user_id == user_id).\
+                group_by(Transactions.symbol, Transactions.type)
+    
     # define def sum_stocks
     with orm_session(engine) as ss:
-        transactions = ss.query(Transactions.symbol, Transactions.type, func.sum(Transactions.shares)).\
-                        filter(Transactions.user_id == user_id).\
-                        group_by(Transactions.symbol, Transactions.type)
-    # calculate stock Quantity
-    stocks = {}
-    for symbol, type, sum in transactions:
-        if type == 'BUY':
-            stocks[symbol] = stocks.get(symbol, 0) + sum
-        else:
-            stocks[symbol] = stocks.get(symbol, 0) - sum
+        # calculate stock Quantity
+        stocks = {}
+        for symbol, type, sum in ss.execute(stmt):
+            if type == 'BUY':
+                stocks[symbol] = stocks.get(symbol, 0) + sum
+            else:
+                stocks[symbol] = stocks.get(symbol, 0) - sum
 
     return stocks
 
